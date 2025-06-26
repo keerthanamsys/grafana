@@ -5,7 +5,7 @@ import { useParams } from 'react-router-dom-v5-compat';
 
 import { GrafanaTheme2 } from '@grafana/data';
 import { Trans, t } from '@grafana/i18n';
-import { config, locationService } from '@grafana/runtime';
+import { config, locationService, getBackendSrv } from '@grafana/runtime';
 import { Alert, Button, Stack, useStyles2 } from '@grafana/ui';
 import { useAppNotification } from 'app/core/copy/appNotification';
 import { contextSrv } from 'app/core/core';
@@ -144,7 +144,44 @@ export const AlertRuleForm = ({ existing, prefill, isManualRestore }: Props) => 
     setConditionErrorMsg(msg);
   };
 
-  // @todo why is error not propagated to form?
+  // Helper for checking/creating rule group if needed
+  async function ensureGroupExists(groupIdentifier: RuleGroupIdentifier, ruleDef: any) {
+    const backendSrv = getBackendSrv();
+    const ns = encodeURIComponent(groupIdentifier.namespaceName);
+    const group = encodeURIComponent(groupIdentifier.groupName);
+    try {
+      // Try to fetch the group, ignore result
+      await backendSrv.get(`/api/alerting/rules/${ns}/${group}`);
+    } catch (err: any) {
+      if (err?.status === 404) {
+        // Group does not exist, create it with this rule
+        const groupPayload = {
+          name: groupIdentifier.groupName,
+          folderUid: groupIdentifier.namespaceName,
+          interval: ruleDef.interval ?? '1m',
+          rules: [ruleDef],
+        };
+        await backendSrv.put(`/api/alerting/rules/${ns}/${group}`, groupPayload);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // Helper for deleting an empty group
+  async function deleteEmptyGroup(groupIdentifier: RuleGroupIdentifier) {
+    const backendSrv = getBackendSrv();
+    const ns = encodeURIComponent(groupIdentifier.namespaceName);
+    const group = encodeURIComponent(groupIdentifier.groupName);
+    try {
+      await backendSrv.delete(`/api/alerting/rules/${ns}/${group}`);
+    } catch (err: any) {
+      if (err?.status !== 404) {
+        throw err;
+      }
+    }
+  }
+
   const submit = async (values: RuleFormValues): Promise<void> => {
     const { type, evaluateEvery } = values;
 
@@ -168,36 +205,59 @@ export const AlertRuleForm = ({ existing, prefill, isManualRestore }: Props) => 
     const targetRuleGroupIdentifier = getRuleGroupLocationFromFormValues(values);
 
     let saveResult: RulerGroupUpdatedResponse;
-    // @TODO move this to a hook too to make sure the logic here is tested for regressions?
-    if (!existing) {
-      // when creating a new rule, we save the manual routing setting , and editorSettings.simplifiedQueryEditor to the local storage
-      storeInLocalStorageValues(values);
-      // save the rule to the rule group
-      saveResult = await addRuleToRuleGroup.execute(ruleGroupIdentifier, ruleDefinition, evaluateEvery);
-      // track the new Grafana-managed rule creation in the analytics
-      if (grafanaTypeRule) {
-        const dataQueries = values.queries.filter((query) => !isExpressionQuery(query.model));
-        const expressionQueries = values.queries.filter((query) => isExpressionQueryInAlert(query));
-        trackNewGrafanaAlertRuleFormSavedSuccess({
-          simplifiedQueryEditor: values.editorSettings?.simplifiedQueryEditor ?? false,
-          simplifiedNotificationEditor: values.editorSettings?.simplifiedNotificationEditor ?? false,
-          canBeTransformedToSimpleQuery: areQueriesTransformableToSimpleCondition(dataQueries, expressionQueries),
-        });
-      }
-    } else {
-      // when updating an existing rule
-      const ruleIdentifier = fromRulerRuleAndRuleGroupIdentifier(ruleGroupIdentifier, existing.rule);
-      saveResult = await updateRuleInRuleGroup.execute(
-        ruleGroupIdentifier,
-        ruleIdentifier,
-        ruleDefinition,
-        targetRuleGroupIdentifier,
-        evaluateEvery
-      );
-    }
 
-    redirectToDetailsPage(ruleDefinition, targetRuleGroupIdentifier, saveResult);
-    return;
+    try {
+      // If creating a new rule or moving to a new group, ensure the group exists
+      const movingToNewGroup =
+        !existing ||
+        (existing &&
+          (ruleGroupIdentifier.groupName !== targetRuleGroupIdentifier.groupName ||
+            ruleGroupIdentifier.namespaceName !== targetRuleGroupIdentifier.namespaceName));
+      if (movingToNewGroup) {
+        await ensureGroupExists(targetRuleGroupIdentifier, ruleDefinition);
+      }
+
+      if (!existing) {
+        // when creating a new rule, we save the manual routing setting , and editorSettings.simplifiedQueryEditor to the local storage
+        storeInLocalStorageValues(values);
+        // save the rule to the rule group
+        saveResult = await addRuleToRuleGroup.execute(ruleGroupIdentifier, ruleDefinition, evaluateEvery);
+        // track the new Grafana-managed rule creation in the analytics
+        if (grafanaTypeRule) {
+          const dataQueries = values.queries.filter((query) => !isExpressionQuery(query.model));
+          const expressionQueries = values.queries.filter((query) => isExpressionQueryInAlert(query));
+          trackNewGrafanaAlertRuleFormSavedSuccess({
+            simplifiedQueryEditor: values.editorSettings?.simplifiedQueryEditor ?? false,
+            simplifiedNotificationEditor: values.editorSettings?.simplifiedNotificationEditor ?? false,
+            canBeTransformedToSimpleQuery: areQueriesTransformableToSimpleCondition(dataQueries, expressionQueries),
+          });
+        }
+      } else {
+        // when updating an existing rule
+        const ruleIdentifier = fromRulerRuleAndRuleGroupIdentifier(ruleGroupIdentifier, existing.rule);
+        saveResult = await updateRuleInRuleGroup.execute(
+          ruleGroupIdentifier,
+          ruleIdentifier,
+          ruleDefinition,
+          targetRuleGroupIdentifier,
+          evaluateEvery
+        );
+
+        // If the original group becomes empty after moving the rule, delete the group
+        if (
+          ruleGroupIdentifier.groupName !== targetRuleGroupIdentifier.groupName ||
+          ruleGroupIdentifier.namespaceName !== targetRuleGroupIdentifier.namespaceName
+        ) {
+          await deleteEmptyGroup(ruleGroupIdentifier);
+        }
+      }
+
+      redirectToDetailsPage(ruleDefinition, targetRuleGroupIdentifier, saveResult);
+      return;
+    } catch (err: any) {
+      notifyApp.error(err?.message ?? 'Failed to save rule/group');
+      return;
+    }
   };
 
   const onInvalid: SubmitErrorHandler<RuleFormValues> = (errors): void => {
