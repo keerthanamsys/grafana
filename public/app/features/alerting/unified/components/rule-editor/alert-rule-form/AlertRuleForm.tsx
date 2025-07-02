@@ -221,7 +221,7 @@ export const AlertRuleForm = ({ existing, prefill, isManualRestore }: Props) => 
         // when creating a new rule, we save the manual routing setting , and editorSettings.simplifiedQueryEditor to the local storage
         storeInLocalStorageValues(values);
         // save the rule to the rule group
-        saveResult = await addRuleToRuleGroup.execute(ruleGroupIdentifier, ruleDefinition, evaluateEvery);
+        saveResult = await addRuleToRuleGroup.execute(targetRuleGroupIdentifier, ruleDefinition, evaluateEvery);
         // track the new Grafana-managed rule creation in the analytics
         if (grafanaTypeRule) {
           const dataQueries = values.queries.filter((query) => !isExpressionQuery(query.model));
