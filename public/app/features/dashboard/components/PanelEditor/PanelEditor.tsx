@@ -259,6 +259,7 @@ export class PanelEditorUnconnected extends PureComponent<Props> {
         paneSize={uiState.topPaneSize}
         primary="first"
         secondaryPaneStyle={{ minHeight: 0 }}
+        minSize={100} 
         onDragFinished={(size) => {
           if (size) {
             updatePanelEditorUIState({ topPaneSize: size / window.innerHeight });
