@@ -90,10 +90,12 @@ export class SplitPaneWrapper extends PureComponent<React.PropsWithChildren<Prop
       <React.Fragment key="rightPane">{childrenArr[1] || undefined}</React.Fragment>,
     ];
 
+    const minHeight = 100; 
+
     return (
       <SplitPane
         split={splitOrientation}
-        minSize={minSize}
+        minSize={splitOrientation === 'horizontal' ? minHeight : minSize}
         maxSize={maxSize}
         size={splitVisible ? paneSizePx : 0}
         primary={splitVisible ? primary : 'second'}
